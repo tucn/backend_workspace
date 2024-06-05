@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package version;
+
+option go_package = "github.com/tucn/backend_workspace/api/gen/go/gateway";
+
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "Gateway Service"
+    version: "1.0"
+    description: "API Gateway"
+  }
+  schemes: HTTP
+  produces: "application/json"
+  consumes: "application/json"
+};
+
+service VersionService {
+  rpc GetVersion (VersionRequest) returns (VersionResponse) {
+    option (google.api.http) = {
+      get: "/v1/version"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get service version"
+      description: "Returns the current version of the service"
+      tags: "version"
+    };
+  }
+}
+
+message VersionRequest {}
+
+message VersionResponse {
+  string version = 1;
+}
