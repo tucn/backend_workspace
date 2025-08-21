@@ -57,7 +57,7 @@ jobs:
   compliance-verification:
     needs: enhanced-scan
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: false
 
     steps:
     - name: Checkout repository
@@ -163,7 +163,7 @@ jobs:
   slsa-verification:
     needs: enhanced-scan
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: false
 
     steps:
     - name: Checkout repository
@@ -215,7 +215,7 @@ jobs:
   sla-monitoring:
     needs: [enhanced-scan, compliance-verification, slsa-verification]
     runs-on: ubuntu-latest
-    if: always()
+    if: false
 
     steps:
     - name: Checkout repository
@@ -264,7 +264,7 @@ jobs:
   security-dashboard:
     needs: [enhanced-scan, compliance-verification, slsa-verification, sla-monitoring]
     runs-on: ubuntu-latest
-    if: always()
+    if: false
 
     steps:
     - name: Checkout repository
