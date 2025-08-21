@@ -1,10 +1,14 @@
-FROM golang:1.20.1-buster as builder
-WORKDIR /app
+FROM golang:1.22 as builder
+WORKDIR /src
+
+# Copy the entire repository (build context should be repo root)
 COPY . .
 
-WORKDIR /app/sample/gobackend
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=-buildid= -mod vendor -a -o ./gobackend -v ./cmd/gobackend
+# Build the gateway binary
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -buildid=" -a -o /out/gateway ./external/gateway/cmd/gateway
 
-FROM cgr.dev/chainguard/static@sha256:69c1e79431374847fbc21d74dc632e717040a1a7d795f7128ca73e7b8c028eae
-COPY --from=builder /app/sample/gobackend/gobackend .
-ENTRYPOINT ["./gobackend"]
+FROM cgr.dev/chainguard/static:latest
+COPY --from=builder /out/gateway /gateway
+USER 65532:65532
+EXPOSE 8080 50051
+ENTRYPOINT ["/gateway"]

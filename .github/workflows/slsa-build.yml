@@ -6,6 +6,7 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -58,7 +59,8 @@ jobs:
       id: build
       uses: docker/build-push-action@v5
       with:
-        context: ./external/gateway
+        context: .
+        file: ./external/gateway/Dockerfile
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
