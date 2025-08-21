@@ -1,0 +1,105 @@
+# Copa Configuration for Auto-Patching
+# This file configures how Copa automatically patches vulnerabilities
+
+# Global settings
+global:
+  # Maximum number of concurrent patch operations
+  max-concurrency: 4
+  
+  # Timeout for patch operations (in seconds)
+  timeout: 1800
+  
+  # Retry configuration
+  retry:
+    max-attempts: 3
+    backoff-delay: 30s
+
+# Patch settings
+patch:
+  # Enable/disable automatic patching
+  enabled: true
+  
+  # Patch strategy: "latest" or "minimal"
+  strategy: "minimal"
+  
+  # Maximum number of patches to apply per image
+  max-patches: 50
+  
+  # Severity thresholds for auto-patching
+  severity-thresholds:
+    critical: true
+    high: true
+    medium: false
+    low: false
+  
+  # Package types to patch
+  package-types:
+    - "apk"
+    - "deb"
+    - "rpm"
+    - "go"
+    - "npm"
+    - "pip"
+  
+  # Exclude specific packages from patching
+  exclude-packages:
+    - "kernel"
+    - "glibc"
+    - "openssl"
+  
+  # Exclude specific vulnerabilities by ID
+  exclude-vulnerabilities:
+    - "CVE-2023-1234"
+    - "CVE-2023-5678"
+
+# Output settings
+output:
+  # Output directory for patched images
+  directory: "./patched"
+  
+  # Output format: "docker" or "oci"
+  format: "docker"
+  
+  # Enable/disable compression
+  compression: true
+  
+  # Metadata preservation
+  preserve-metadata: true
+
+# Security settings
+security:
+  # Enable/disable signature verification
+  verify-signatures: true
+  
+  # Enable/disable checksum verification
+  verify-checksums: true
+  
+  # Allowed registries for base images
+  allowed-registries:
+    - "ghcr.io"
+    - "docker.io"
+    - "cgr.dev"
+
+# Logging settings
+logging:
+  # Log level: "debug", "info", "warn", "error"
+  level: "info"
+  
+  # Enable/disable structured logging
+  structured: true
+  
+  # Log file path (optional)
+  file: "./copa.log"
+
+# Notifications
+notifications:
+  # Enable/disable notifications
+  enabled: true
+  
+  # Notification channels
+  channels:
+    - type: "github"
+      events: ["patch-success", "patch-failure", "vulnerability-detected"]
+    - type: "slack"
+      webhook: "${{ secrets.SLACK_WEBHOOK }}"
+      events: ["patch-success", "patch-failure"]

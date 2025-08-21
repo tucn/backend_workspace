@@ -1,0 +1,321 @@
+name: Dependency Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+
+jobs:
+  go-dependency-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+        cache: true
+
+    - name: Install Go security tools
+      run: |
+        # Install govulncheck for Go vulnerability scanning
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        
+        # Install gosec for Go security linter
+        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        
+        # Install staticcheck for Go static analysis
+        go install honnef.co/go/tools/cmd/staticcheck@latest
+        
+        # Add Go bin to PATH
+        echo "$GOPATH/bin" >> $GITHUB_PATH
+
+    - name: Download Go modules
+      run: go mod download
+
+    - name: Run govulncheck
+      run: |
+        echo "Running govulncheck for Go vulnerability scanning..."
+        govulncheck ./... > govulncheck-report.txt 2>&1 || true
+        
+        # Check if vulnerabilities were found
+        if grep -q "Vulnerabilities:" govulncheck-report.txt; then
+          echo "Vulnerabilities found in Go dependencies"
+          cat govulncheck-report.txt
+        else
+          echo "No vulnerabilities found in Go dependencies"
+        fi
+
+    - name: Run gosec security linter
+      run: |
+        echo "Running gosec security linter..."
+        gosec -fmt=json -out=gosec-report.json ./... > gosec-output.txt 2>&1 || true
+        
+        # Check if security issues were found
+        if [ -f "gosec-report.json" ]; then
+          ISSUES=$(jq '.Issues | length' gosec-report.json 2>/dev/null || echo "0")
+          echo "Found $ISSUES security issues with gosec"
+        fi
+
+    - name: Run staticcheck
+      run: |
+        echo "Running staticcheck for static analysis..."
+        staticcheck ./... > staticcheck-report.txt 2>&1 || true
+        
+        # Count issues found
+        if [ -f "staticcheck-report.txt" ]; then
+          ISSUES=$(grep -c ":" staticcheck-report.txt || echo "0")
+          echo "Found $ISSUES static analysis issues"
+        fi
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-security-reports
+        path: |
+          govulncheck-report.txt
+          gosec-report.json
+          gosec-output.txt
+          staticcheck-report.txt
+        retention-days: 30
+
+    - name: Create security summary
+      run: |
+        echo "## 🔍 Go Dependency Security Scan" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Scan Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Parse govulncheck results
+        if [ -f "govulncheck-report.txt" ]; then
+          if grep -q "Vulnerabilities:" govulncheck-report.txt; then
+            VULN_COUNT=$(grep -c "VULN:" govulncheck-report.txt || echo "0")
+            echo "🔴 **Go Vulnerabilities:** $VULN_COUNT found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Go Vulnerabilities:** None found" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        # Parse gosec results
+        if [ -f "gosec-report.json" ]; then
+          GOSEC_ISSUES=$(jq '.Issues | length' gosec-report.json 2>/dev/null || echo "0")
+          if [ "$GOSEC_ISSUES" -gt 0 ]; then
+            echo "🟠 **Security Issues:** $GOSEC_ISSUES found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Security Issues:** None found" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        # Parse staticcheck results
+        if [ -f "staticcheck-report.txt" ]; then
+          STATIC_ISSUES=$(grep -c ":" staticcheck-report.txt || echo "0")
+          if [ "$STATIC_ISSUES" -gt 0 ]; then
+            echo "🟡 **Static Analysis:** $STATIC_ISSUES issues found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Static Analysis:** No issues found" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📋 **Reports generated:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Go vulnerability scan (govulncheck)" >> $GITHUB_STEP_SUMMARY
+        echo "- Security linter (gosec)" >> $GITHUB_STEP_SUMMARY
+        echo "- Static analysis (staticcheck)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Comment PR with security findings
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let summary = `## 🔍 Go Dependency Security Scan Results
+          
+          **Branch:** \`${{ github.ref_name }}\`
+          **Scan Date:** ${new Date().toISOString()}
+          
+          `;
+          
+          try {
+            // Check govulncheck results
+            if (fs.existsSync('govulncheck-report.txt')) {
+              const govulnContent = fs.readFileSync('govulncheck-report.txt', 'utf8');
+              if (govulnContent.includes('Vulnerabilities:')) {
+                const vulnCount = (govulnContent.match(/VULN:/g) || []).length;
+                summary += `🔴 **Go Vulnerabilities:** ${vulnCount} found\n\n`;
+                
+                // Extract vulnerability details
+                const vulnLines = govulnContent.split('\n').filter(line => line.includes('VULN:'));
+                if (vulnLines.length > 0) {
+                  summary += '**Vulnerabilities:**\n';
+                  vulnLines.slice(0, 5).forEach(line => {
+                    summary += `- ${line.trim()}\n`;
+                  });
+                  if (vulnLines.length > 5) {
+                    summary += `- ... and ${vulnLines.length - 5} more\n`;
+                  }
+                  summary += '\n';
+                }
+              } else {
+                summary += '✅ **Go Vulnerabilities:** None found\n\n';
+              }
+            }
+            
+            // Check gosec results
+            if (fs.existsSync('gosec-report.json')) {
+              const gosecData = JSON.parse(fs.readFileSync('gosec-report.json', 'utf8'));
+              if (gosecData.Issues && gosecData.Issues.length > 0) {
+                summary += `🟠 **Security Issues:** ${gosecData.Issues.length} found\n\n`;
+                
+                // Group issues by severity
+                const highIssues = gosecData.Issues.filter(issue => issue.severity === 'HIGH');
+                const mediumIssues = gosecData.Issues.filter(issue => issue.severity === 'MEDIUM');
+                const lowIssues = gosecData.Issues.filter(issue => issue.severity === 'LOW');
+                
+                if (highIssues.length > 0) {
+                  summary += `**High Severity:** ${highIssues.length}\n`;
+                }
+                if (mediumIssues.length > 0) {
+                  summary += `**Medium Severity:** ${mediumIssues.length}\n`;
+                }
+                if (lowIssues.length > 0) {
+                  summary += `**Low Severity:** ${lowIssues.length}\n`;
+                }
+                summary += '\n';
+              } else {
+                summary += '✅ **Security Issues:** None found\n\n';
+              }
+            }
+            
+            // Check staticcheck results
+            if (fs.existsSync('staticcheck-report.txt')) {
+              const staticContent = fs.readFileSync('staticcheck-report.txt', 'utf8');
+              const issueCount = (staticContent.match(/:/g) || []).length;
+              if (issueCount > 0) {
+                summary += `🟡 **Static Analysis:** ${issueCount} issues found\n\n`;
+              } else {
+                summary += '✅ **Static Analysis:** No issues found\n\n';
+              }
+            }
+            
+            summary += `📋 [View full reports](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ---
+            *Generated by GitHub Actions security workflow*`;
+            
+          } catch (error) {
+            summary += `❌ **Error processing scan results:** ${error.message}\n\n`;
+            summary += 'Please check the workflow logs for details.';
+          }
+          
+          // Add comment to PR
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
+
+  npm-dependency-scan:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.modified, 'package.json') || contains(github.event.head_commit.added, 'package.json') || contains(github.event.head_commit.removed, 'package.json')
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install npm audit tools
+      run: |
+        npm install -g npm-audit-resolver
+        npm install -g audit-ci
+
+    - name: Find package.json files
+      run: |
+        find . -name "package.json" -type f > package-files.txt
+        echo "Found package.json files:"
+        cat package-files.txt
+
+    - name: Run npm audit
+      run: |
+        while IFS= read -r package_file; do
+          if [ -f "$package_file" ]; then
+            dir=$(dirname "$package_file")
+            echo "Scanning dependencies in: $dir"
+            cd "$dir"
+            
+            # Run npm audit
+            npm audit --audit-level=moderate --json > "npm-audit-$(basename $dir).json" 2>/dev/null || true
+            
+            # Check for vulnerabilities
+            if [ -f "npm-audit-$(basename $dir).json" ]; then
+              VULN_COUNT=$(jq '.vulnerabilities | length' "npm-audit-$(basename $dir).json" 2>/dev/null || echo "0")
+              echo "Found $VULN_COUNT vulnerabilities in $dir"
+            fi
+            
+            cd - > /dev/null
+          fi
+        done < package-files.txt
+
+    - name: Upload npm audit reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: npm-audit-reports
+        path: "**/npm-audit-*.json"
+        retention-days: 30
+
+    - name: Create npm security summary
+      run: |
+        echo "## 📦 NPM Dependency Security Scan" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Scan Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        TOTAL_VULNS=0
+        PACKAGE_COUNT=0
+        
+        # Count vulnerabilities across all package.json files
+        for audit_file in **/npm-audit-*.json; do
+          if [ -f "$audit_file" ]; then
+            PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
+            VULN_COUNT=$(jq '.vulnerabilities | length' "$audit_file" 2>/dev/null || echo "0")
+            TOTAL_VULNS=$((TOTAL_VULNS + VULN_COUNT))
+            
+            DIR_NAME=$(dirname "$audit_file")
+            echo "📁 **$DIR_NAME:** $VULN_COUNT vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          fi
+        done
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📊 **Summary:**" >> $GITHUB_STEP_SUMMARY
+        echo "- **Packages scanned:** $PACKAGE_COUNT" >> $GITHUB_STEP_SUMMARY
+        echo "- **Total vulnerabilities:** $TOTAL_VULNS" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$TOTAL_VULNS" -gt 0 ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Action Required:** Vulnerabilities detected in NPM dependencies" >> $GITHUB_STEP_SUMMARY
+        fi

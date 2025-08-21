@@ -3,6 +3,7 @@ syntax = "proto3";
 package version;
 
 option go_package = "github.com/tucn/backend_workspace/api/gen/go/gateway";
+option java_package = "github.com/tucn/backend_workspace/api/gen/java/gateway";
 
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";

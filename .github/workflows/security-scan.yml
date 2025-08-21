@@ -1,0 +1,247 @@
+name: Security Scan and Auto-Patch
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/gateway
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      actions: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./external/gateway
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Generate SBOM with Syft
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+        format: spdx-json
+        output-file: sbom.spdx.json
+
+    - name: Upload SBOM artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: sbom.spdx.json
+        retention-days: 90
+
+    - name: Run Grype vulnerability scan
+      uses: anchore/grype-action@v0
+      with:
+        image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+        output: table
+        format: json
+        output-file: vulnerabilities.json
+        fail-on: high
+
+    - name: Upload vulnerability report
+      uses: actions/upload-artifact@v4
+      with:
+        name: vulnerabilities
+        path: vulnerabilities.json
+        retention-days: 90
+
+    - name: Comment PR with vulnerability summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const vulnData = JSON.parse(fs.readFileSync('vulnerabilities.json', 'utf8'));
+            const summary = `## 🔍 Security Scan Results
+          
+          **Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}\`
+          
+          **Vulnerabilities Found:**
+          - **Critical:** ${vulnData.matches.filter(m => m.vulnerability.severity === 'Critical').length}
+          - **High:** ${vulnData.matches.filter(m => m.vulnerability.severity === 'High').length}
+          - **Medium:** ${vulnData.matches.filter(m => m.vulnerability.severity === 'Medium').length}
+          - **Low:** ${vulnData.matches.filter(m => m.vulnerability.severity === 'Low').length}
+          
+          **Total:** ${vulnData.matches.length} vulnerabilities
+          
+          📋 [View full report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
+          console.log('PR comment added successfully');
+          } catch (error) {
+            console.error('Error processing vulnerability data:', error);
+          }
+
+  auto-patch:
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Download SBOM
+      uses: actions/download-artifact@v4
+      with:
+        name: sbom
+        path: ./
+
+    - name: Download vulnerability report
+      uses: actions/download-artifact@v4
+      with:
+        name: vulnerabilities
+        path: ./
+
+    - name: Setup Copa
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+
+    - name: Install Copa
+      run: |
+        go install github.com/project-copacetic/copacetic@latest
+        echo "$GOPATH/bin" >> $GITHUB_PATH
+
+    - name: Run Copa auto-patch
+      run: |
+        # Check if vulnerabilities exist
+        if [ -f "vulnerabilities.json" ]; then
+          echo "Running Copa auto-patch..."
+          
+          # Get the latest image tag
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+          
+          # Run Copa to patch vulnerabilities
+          copa patch \
+            --image "$IMAGE_TAG" \
+            --report vulnerabilities.json \
+            --output-dir ./patched \
+            --dry-run=false
+          
+          echo "Auto-patch completed"
+        else
+          echo "No vulnerability report found, skipping auto-patch"
+        fi
+
+    - name: Build patched image
+      if: success()
+      uses: docker/build-push-action@v5
+      with:
+        context: ./external/gateway
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:patched-${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create patch summary
+      if: success()
+      run: |
+        echo "## 🔧 Auto-Patch Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Original Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Patched Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:patched-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Auto-patch completed successfully" >> $GITHUB_STEP_SUMMARY
+
+  security-dashboard:
+    needs: [build-and-scan, auto-patch]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: vulnerabilities
+        path: ./
+
+    - name: Generate security summary
+      run: |
+        if [ -f "vulnerabilities.json" ]; then
+          echo "## 📊 Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Scan completed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse vulnerability data
+          CRITICAL=$(jq '.matches | map(select(.vulnerability.severity == "Critical")) | length' vulnerabilities.json)
+          HIGH=$(jq '.matches | map(select(.vulnerability.severity == "High")) | length' vulnerabilities.json)
+          MEDIUM=$(jq '.matches | map(select(.vulnerability.severity == "Medium")) | length' vulnerabilities.json)
+          LOW=$(jq '.matches | map(select(.vulnerability.severity == "Low")) | length' vulnerabilities.json)
+          TOTAL=$(jq '.matches | length' vulnerabilities.json)
+          
+          echo "**Vulnerabilities:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔴 Critical: $CRITICAL" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟠 High: $HIGH" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟡 Medium: $MEDIUM" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟢 Low: $LOW" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Action Required:** Critical or High severity vulnerabilities detected!" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "## ❌ Security Scan Failed" >> $GITHUB_STEP_SUMMARY
+          echo "No vulnerability report generated." >> $GITHUB_STEP_SUMMARY
+        fi
