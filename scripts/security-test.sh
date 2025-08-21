@@ -45,7 +45,7 @@ install_go_tools() {
     
     if ! command_exists gosec; then
         print_status "Installing gosec..."
-        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
     fi
     
     if ! command_exists staticcheck; then

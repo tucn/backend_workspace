@@ -32,8 +32,8 @@ jobs:
         # Install govulncheck for Go vulnerability scanning
         go install golang.org/x/vuln/cmd/govulncheck@latest
         
-        # Install gosec for Go security linter
-        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        # Install gosec for Go security linter (official path)
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
         
         # Install staticcheck for Go static analysis
         go install honnef.co/go/tools/cmd/staticcheck@latest
